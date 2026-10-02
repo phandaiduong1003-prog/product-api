@@ -1,0 +1,74 @@
+name: Product API Local Deploy
+
+on:
+  workflow_run:
+    workflows:
+      - Product API CD Docker Hub
+    types:
+      - completed
+    branches:
+      - main
+
+jobs:
+  deploy-local:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: [self-hosted, Windows, X64]
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Check Docker Engine
+        shell: powershell
+        run: docker version
+
+      - name: Stop old containers
+        shell: powershell
+        run: |
+          docker compose -p product-api -f docker-compose-prod.yaml down --remove-orphans
+
+      - name: Pull latest images from Docker Hub
+        shell: powershell
+        run: |
+          docker compose -p product-api -f docker-compose-prod.yaml pull
+
+      - name: Deploy to local Docker Engine
+        shell: powershell
+        run: |
+          docker compose -p product-api -f docker-compose-prod.yaml up -d
+
+      - name: Wait for system health
+        shell: powershell
+        run: |
+          $success = $false
+
+          for ($i = 1; $i -le 12; $i++) {
+            try {
+              $response = Invoke-RestMethod `
+                -Uri "http://localhost:3000/health" `
+                -TimeoutSec 5
+
+              if ($response.status -eq "OK" -and $response.database -eq "connected") {
+                Write-Host "System health check passed"
+                $success = $true
+                break
+              }
+            }
+            catch {
+              Write-Host "Waiting for Product API... attempt $i/12"
+            }
+
+            Start-Sleep -Seconds 5
+          }
+
+          if (-not $success) {
+            docker compose -p product-api -f docker-compose-prod.yaml ps
+            throw "System health check failed"
+          }
+
+      - name: Show running containers
+        shell: powershell
+        run: |
+          docker compose -p product-api -f docker-compose-prod.yaml ps
